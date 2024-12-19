@@ -9,8 +9,8 @@ file_dir = os.path.dirname(__file__)
 data_dir = os.path.join(file_dir, 'data')
 sys.path.insert(0, os.path.abspath(os.path.join(file_dir, '..')))
 
-from core.datatype import MovieInfo
-from web.exceptions import CrawlerError
+from javsp.datatype import MovieInfo
+from javsp.web.exceptions import CrawlerError, SiteBlocked
 
 
 logger = logging.getLogger(__name__)
@@ -27,8 +27,7 @@ def test_crawler(crawler_params):
         logger.warning(f"{site} 连接超时: {params}")
     except Exception as e:
         if os.getenv('GITHUB_ACTIONS') and (site in ['javdb', 'javlib', 'airav']):
-            logger.debug(f'检测到Github actions环境，已忽略测试失败项: {params}')
-            logger.exception(e)
+            logger.debug(f'检测到Github actions环境，已忽略测试失败项: {params}', exc_info=True)
         else:
             raise
 
@@ -40,19 +39,22 @@ def compare(avid, scraper, file):
     else:
         online = MovieInfo(cid=avid)
     # 导入抓取器模块
-    scraper_mod = 'web.' + scraper
+    scraper_mod = 'javsp.web.' + scraper
     __import__(scraper_mod)
     mod = sys.modules[scraper_mod]
     if hasattr(mod, 'parse_clean_data'):
         parse_data = getattr(mod, 'parse_clean_data')
     else:
         parse_data = getattr(mod, 'parse_data')
+
     try:
         parse_data(online)
-    except CrawlerError as e:
+    except SiteBlocked as e:
+        logger.warning(e)
+        return
+    except (CrawlerError, requests.exceptions.ReadTimeout) as e:
         logger.info(e)
-    except requests.exceptions.ReadTimeout as e:
-        logger.info(e)
+
     try:
         # 解包数据再进行比较，以便测试不通过时快速定位不相等的键值
         local_vars = vars(local)
@@ -68,11 +70,18 @@ def compare(avid, scraper, file):
                 assert urlsplit(v).path == urlsplit(local_vars.get(k, None)).path
             elif k == 'actress_pics' and scraper == 'javbus':
                 local_tmp = online_tmp = {}
-                local_pics = local_vars.get('actress_pics')
+                local_pics = local_vars.get(k)
                 if local_pics:
                     local_tmp = {name: urlsplit(url).path for name, url in local_pics.items()}
                 if v:
                     online_tmp = {name: urlsplit(url).path for name, url in v.items()}
+                assert local_tmp == online_tmp
+            elif k == 'preview_pics' and scraper == 'javbus':
+                local_pics = local_vars.get(k)
+                if local_pics:
+                    local_tmp = [urlsplit(i).path for i in local_pics]
+                if v:
+                    online_tmp = [urlsplit(i).path for i in v]
                 assert local_tmp == online_tmp
             # 对顺序没有要求的list型字段，比较时也应该忽略顺序信息
             elif k in ['genre', 'genre_id', 'genre_norm', 'actress']:
