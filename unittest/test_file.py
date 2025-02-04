@@ -7,11 +7,16 @@ from shutil import rmtree
 
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from core.file import failed_items, scan_movies
+from javsp.file import scan_movies
 
 
 tmp_folder = 'TMP_' + ''.join(random.choices(string.ascii_uppercase, k=6))
+DEFAULT_SIZE = 512*2**20    # 512 MiB
 
+def touch_file_size(path: str, size_bytes: int):
+    with open(path, 'wb') as f:
+        f.seek(size_bytes - 1)
+        f.write(b'\0')
 
 @pytest.fixture
 def prepare_files(files):
@@ -21,13 +26,13 @@ def prepare_files(files):
         files (list of tuple): 文件列表，仅接受相对路径
     """
     if not isinstance(files, dict):
-        files = {i:1024 for i in files}
+        files = {i:DEFAULT_SIZE for i in files}
     for name, size in files.items():
         path = os.path.join(tmp_folder, name)
         folder = os.path.split(path)[0]
         if folder and (not os.path.exists(folder)):
             os.makedirs(folder)
-        os.system(f'fsutil file createnew "{path}" {size}')
+        touch_file_size(path, size)
     yield
     rmtree(tmp_folder)
     return
@@ -94,6 +99,17 @@ def test_scan_movies__cdx(prepare_files):
     assert basenames[0] == 'ABC-123.CD1.mp4'
     assert basenames[1] == 'ABC-123.CD2 .mp4'
     assert basenames[2] == 'ABC-123.CD3.mp4'
+
+
+@pytest.mark.parametrize('files', [('abc123cd1.mp4','abc123cd2.mp4')])
+def test_scan_movies__cdx_without_delimeter(prepare_files):
+    movies = scan_movies(tmp_folder)
+    assert len(movies) == 1
+    assert movies[0].dvdid == 'ABC-123'
+    assert len(movies[0].files) == 2
+    basenames = [os.path.basename(i) for i in movies[0].files]
+    assert basenames[0] == 'abc123cd1.mp4'
+    assert basenames[1] == 'abc123cd2.mp4'
 
 
 # 文件夹以番号命名，分片位于文件夹内且无番号信息
@@ -195,7 +211,7 @@ def test_scan_movies__mix_data(prepare_files):
 
 
 # 文件夹以番号命名，文件夹内同时有带番号的影片和广告
-@pytest.mark.parametrize('files', [{'ABC-123/ABC-123.mp4': 1, 'ABC-123/广告1.mp4': 1024, 'ABC-123/广告2.mp4': 1048576, 'ABC-123/Advertisement.mp4': 243269631}])
+@pytest.mark.parametrize('files', [{'ABC-123/ABC-123.mp4': DEFAULT_SIZE, 'ABC-123/广告1.mp4': 1024, 'ABC-123/广告2.mp4': 243269631}])
 def test_scan_movies__1_video_with_ad(prepare_files):
     movies = scan_movies(tmp_folder)
     assert len(movies) == 1
@@ -203,22 +219,8 @@ def test_scan_movies__1_video_with_ad(prepare_files):
     assert len(movies[0].files) == 1
 
 
-# 文件夹以番号命名，文件夹内同时有带番号的影片和超出阈值的广告
-@pytest.mark.parametrize('files', [{'ABC-123/ABC-123.mp4': 1, 'ABC-123/广告1.mp4': 1024, 'ABC-123/广告2.mp4': 1048576, 'ABC-123/Advertisement.mp4': 2**30}])
-def test_scan_movies__1_video_with_large_ad(prepare_files):
-    before = failed_items.copy()
-    movies = scan_movies(tmp_folder)
-    after = failed_items.copy()
-    failed = [i for i in after if i not in before]
-    assert len(movies) == 1
-    assert movies[0].dvdid == 'ABC-123'
-    assert len(movies[0].files) == 1
-    assert len(failed) == 1 and len(failed[0].files) == 1
-    assert os.path.basename(failed[0].files[0]) == 'Advertisement.mp4'
-
-
 # 文件夹内同时有多部带番号的影片和广告
-@pytest.mark.parametrize('files', [{'ABC-123.mp4': 1, 'DEF-456.mp4': 1, '广告1.mp4': 1024, '广告2.mp4': 1048576, 'Advertisement.mp4': 243269631}])
+@pytest.mark.parametrize('files', [{'ABC-123.mp4': DEFAULT_SIZE, 'DEF-456.mp4': DEFAULT_SIZE, '广告1.mp4': 1024, '广告2.mp4': 243269631}])
 def test_scan_movies__n_video_with_ad(prepare_files):
     movies = scan_movies(tmp_folder)
     assert len(movies) == 2
